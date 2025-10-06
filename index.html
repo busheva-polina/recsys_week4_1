@@ -95,6 +95,43 @@
             padding: 10px 15px;
             margin: 15px 0;
         }
+        .file-input-group {
+            margin: 15px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background-color: #f8f9fa;
+        }
+        .file-input-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 10px 0;
+        }
+        .file-input-label {
+            min-width: 120px;
+            font-weight: bold;
+        }
+        .file-input {
+            flex: 1;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        .file-submit-btn {
+            background-color: #28a745;
+        }
+        .file-submit-btn:hover {
+            background-color: #218838;
+        }
+        .file-status {
+            font-size: 12px;
+            color: #666;
+            margin-left: 10px;
+        }
+        .upload-section {
+            margin: 20px 0;
+        }
     </style>
 </head>
 <body>
@@ -104,15 +141,34 @@
         <div class="info-box">
             <strong>Usage Tips:</strong> 
             <ul>
-                <li>Load Data first (takes ~5-10 seconds)</li>
+                <li>Option 1: Use pre-loaded data by clicking "Load Data"</li>
+                <li>Option 2: Upload your own u.data and u.item files using the form below</li>
                 <li>Training takes 1-2 minutes (10 epochs)</li>
                 <li>Test shows recommendations for random user with 20+ ratings</li>
                 <li>Host on GitHub Pages by placing files in repository root</li>
             </ul>
         </div>
 
+        <div class="upload-section">
+            <h3>📁 Upload Your Own Data Files</h3>
+            <div class="file-input-group">
+                <div class="file-input-row">
+                    <span class="file-input-label">u.data file:</span>
+                    <input type="file" id="uDataFile" class="file-input" accept=".data,.txt">
+                    <button id="submitUData" class="file-submit-btn">Submit u.data</button>
+                    <span id="uDataStatus" class="file-status">Not submitted</span>
+                </div>
+                <div class="file-input-row">
+                    <span class="file-input-label">u.item file:</span>
+                    <input type="file" id="uItemFile" class="file-input" accept=".item,.txt">
+                    <button id="submitUItem" class="file-submit-btn">Submit u.item</button>
+                    <span id="uItemStatus" class="file-status">Not submitted</span>
+                </div>
+            </div>
+        </div>
+
         <div class="button-group">
-            <button id="loadData">Load Data</button>
+            <button id="loadData">Load Pre-loaded Data</button>
             <button id="trainBasic" disabled>Train Basic Model</button>
             <button id="trainDL" disabled>Train Deep Learning Model</button>
             <button id="test" disabled>Test Recommendations</button>
