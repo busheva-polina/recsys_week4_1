@@ -17,7 +17,7 @@ class MovieLensApp {
         this.isDataLoaded = false;
         
         this.setupEventListeners();
-        this.updateStatus('Please click "Load Data" to start');
+        this.updateStatus('Please load data using one of the options above');
     }
 
     setupEventListeners() {
@@ -25,6 +25,10 @@ class MovieLensApp {
         document.getElementById('trainBasic').addEventListener('click', () => this.trainModel('basic'));
         document.getElementById('trainDL').addEventListener('click', () => this.trainModel('dl'));
         document.getElementById('test').addEventListener('click', () => this.testRecommendations());
+        
+        // File upload event listeners
+        document.getElementById('submitUData').addEventListener('click', () => this.handleFileUpload('uData'));
+        document.getElementById('submitUItem').addEventListener('click', () => this.handleFileUpload('uItem'));
     }
 
     updateStatus(message) {
@@ -32,9 +36,123 @@ class MovieLensApp {
         console.log(message);
     }
 
+    updateFileStatus(fileType, message, isSuccess = true) {
+        const statusElement = document.getElementById(`${fileType}Status`);
+        statusElement.textContent = message;
+        statusElement.style.color = isSuccess ? '#28a745' : '#dc3545';
+    }
+
+    async handleFileUpload(fileType) {
+        const fileInput = document.getElementById(`${fileType}File`);
+        const file = fileInput.files[0];
+        
+        if (!file) {
+            this.updateFileStatus(fileType, 'Please select a file first', false);
+            return;
+        }
+
+        try {
+            this.updateFileStatus(fileType, 'Reading file...');
+            const text = await this.readFileAsText(file);
+            
+            if (fileType === 'uData') {
+                await this.parseUData(text);
+                this.updateFileStatus(fileType, '✓ u.data loaded successfully');
+            } else if (fileType === 'uItem') {
+                await this.parseUItem(text);
+                this.updateFileStatus(fileType, '✓ u.item loaded successfully');
+            }
+            
+            // Check if both files are loaded and build mappings
+            if (this.interactions.length > 0 && this.items.size > 0) {
+                this.buildMappings();
+                this.buildUserStats();
+                this.isDataLoaded = true;
+                document.getElementById('trainBasic').disabled = false;
+                document.getElementById('trainDL').disabled = false;
+                this.updateStatus(`Uploaded data loaded: ${this.interactions.length} interactions, ${this.items.size} movies, ${this.userMap.size} users`);
+            }
+            
+        } catch (error) {
+            this.updateFileStatus(fileType, `Error: ${error.message}`, false);
+            this.updateStatus(`Error loading ${fileType}: ${error.message}`);
+        }
+    }
+
+    readFileAsText(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => resolve(e.target.result);
+            reader.onerror = (e) => reject(new Error('Failed to read file'));
+            reader.readAsText(file);
+        });
+    }
+
+    parseUData(text) {
+        const lines = text.trim().split('\n');
+        this.interactions = lines.map(line => {
+            const parts = line.split('\t');
+            if (parts.length < 4) {
+                throw new Error('Invalid u.data format: expected 4 columns separated by tabs');
+            }
+            const [userId, itemId, rating, timestamp] = parts;
+            return {
+                userId: parseInt(userId),
+                itemId: parseInt(itemId),
+                rating: parseFloat(rating),
+                timestamp: parseInt(timestamp)
+            };
+        });
+    }
+
+    parseUItem(text) {
+        const lines = text.trim().split('\n');
+        
+        // Genre list from MovieLens documentation
+        this.genres = [
+            "Unknown", "Action", "Adventure", "Animation", "Children's", 
+            "Comedy", "Crime", "Documentary", "Drama", "Fantasy",
+            "Film-Noir", "Horror", "Musical", "Mystery", "Romance",
+            "Sci-Fi", "Thriller", "War", "Western"
+        ];
+        
+        // Create genre mapping
+        this.genres.forEach((genre, index) => {
+            this.genreMap.set(index, genre);
+        });
+
+        lines.forEach(line => {
+            const parts = line.split('|');
+            if (parts.length < 24) {
+                throw new Error('Invalid u.item format: expected 24 columns separated by pipes');
+            }
+            
+            const itemId = parseInt(parts[0]);
+            const title = parts[1];
+            const releaseDate = parts[2];
+            const genreFlags = parts.slice(5, 24).map(flag => parseInt(flag));
+            
+            // Extract year from title (format: "Movie Title (YYYY)")
+            const yearMatch = title.match(/\((\d{4})\)$/);
+            const year = yearMatch ? parseInt(yearMatch[1]) : null;
+            
+            // Get genre names from flags
+            const itemGenres = genreFlags
+                .map((flag, idx) => flag === 1 ? this.genres[idx] : null)
+                .filter(genre => genre !== null);
+            
+            this.items.set(itemId, {
+                title: title.replace(/\s*\(\d{4}\)$/, ''), // Remove year from title
+                year: year,
+                genres: itemGenres,
+                genreFlags: genreFlags
+            });
+        });
+    }
+
     async loadData() {
         try {
-            this.updateStatus('Loading data...');
+            this.updateStatus('Loading pre-loaded data...');
             
             // Load interactions
             const dataResponse = await fetch('data/u.data');
@@ -100,10 +218,10 @@ class MovieLensApp {
             document.getElementById('trainBasic').disabled = false;
             document.getElementById('trainDL').disabled = false;
             
-            this.updateStatus(`Data loaded: ${this.interactions.length} interactions, ${this.items.size} movies, ${this.userMap.size} users`);
+            this.updateStatus(`Pre-loaded data loaded: ${this.interactions.length} interactions, ${this.items.size} movies, ${this.userMap.size} users`);
             
         } catch (error) {
-            this.updateStatus(`Error loading data: ${error.message}`);
+            this.updateStatus(`Error loading pre-loaded data: ${error.message}`);
         }
     }
 
