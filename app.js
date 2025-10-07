@@ -3,284 +3,242 @@ class MovieLensApp {
     constructor() {
         this.interactions = [];
         this.items = new Map();
-        this.userMap = new Map();
-        this.itemMap = new Map();
-        this.reverseUserMap = new Map();
-        this.reverseItemMap = new Map();
-        this.userRatedItems = new Map();
-        this.userTopRated = new Map();
-        
-        this.traditionalModel = null;
-        this.deepLearningModel = null;
+        this.users = new Map();
+        this.userIndexMap = new Map();
+        this.itemIndexMap = new Map();
+        this.reverseUserIndex = new Map();
+        this.reverseItemIndex = new Map();
+        this.model = null;
         this.isDataLoaded = false;
-        this.isTraditionalTrained = false;
-        this.isDeepLearningTrained = false;
-        
-        this.traditionalLossData = [];
-        this.deepLearningLossData = [];
+        this.isModelTrained = false;
         
         this.initializeEventListeners();
+        this.setupCharts();
     }
 
     initializeEventListeners() {
         document.getElementById('loadData').addEventListener('click', () => this.loadData());
-        document.getElementById('trainTraditional').addEventListener('click', () => this.trainTraditional());
-        document.getElementById('trainDeepLearning').addEventListener('click', () => this.trainDeepLearning());
-        document.getElementById('test').addEventListener('click', () => this.testRecommendations());
+        document.getElementById('train').addEventListener('click', () => this.trainModel());
+        document.getElementById('test').addEventListener('click', () => this.testModel());
     }
 
-    async loadData() {
-        this.updateStatus('Loading data...');
-        
-        try {
-            // Load interactions data with error handling
-            const interactionsResponse = await fetch('data/u.data');
-            if (!interactionsResponse.ok) throw new Error('Failed to load u.data');
-            const interactionsText = await interactionsResponse.text();
-            
-            // Load items data with error handling
-            const itemsResponse = await fetch('data/u.item');
-            if (!itemsResponse.ok) throw new Error('Failed to load u.item');
-            const itemsText = await itemsResponse.text();
-            
-            this.parseInteractions(interactionsText);
-            this.parseItems(itemsText);
-            this.buildMappings();
-            this.buildUserRatedItems();
-            
-            this.isDataLoaded = true;
-            document.getElementById('trainTraditional').disabled = false;
-            document.getElementById('trainDeepLearning').disabled = false;
-            
-            this.updateStatus(`Data loaded: ${this.interactions.length} interactions, ${this.items.size} items, ${this.userMap.size} users`);
-            
-        } catch (error) {
-            this.updateStatus(`Error loading data: ${error.message}`);
-            console.error('Data loading error:', error);
-        }
+    setupCharts() {
+        this.lossChart = this.createChart('lossChart', 'Training Loss', 'Epoch', 'Loss');
+        this.embeddingChart = this.createChart('embeddingChart', 'Item Embeddings', 'X', 'Y');
     }
 
-    parseInteractions(text) {
-        const lines = text.split('\n').filter(line => line.trim());
-        this.interactions = [];
+    createChart(canvasId, title, xLabel, yLabel) {
+        const canvas = document.getElementById(canvasId);
+        const ctx = canvas.getContext('2d');
         
-        for (const line of lines) {
-            // Handle both tab and space separation
-            const parts = line.split(/\s+/).filter(part => part.trim());
-            if (parts.length >= 3) {
-                const [userId, itemId, rating, timestamp] = parts;
-                this.interactions.push({
-                    userId: parseInt(userId),
-                    itemId: parseInt(itemId),
-                    rating: parseFloat(rating),
-                    timestamp: timestamp ? parseInt(timestamp) : Date.now()
-                });
-            }
-        }
-    }
-
-    parseItems(text) {
-        const lines = text.split('\n').filter(line => line.trim());
-        this.items.clear();
+        // Clear canvas
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
         
-        for (const line of lines) {
-            // Handle pipe separation and fix parsing issues
-            const parts = line.split('|').filter(part => part.trim());
-            if (parts.length >= 2) {
-                const itemId = parseInt(parts[0]);
-                let title = parts[1];
-                let year = null;
-                
-                // Extract year from title using safer regex
-                const yearMatch = title.match(/\((\d{4})\)$/);
-                if (yearMatch) {
-                    year = parseInt(yearMatch[1]);
-                    title = title.replace(/\(\d{4}\)$/, '').trim();
-                }
-                
-                // Extract genres if available (positions 5-23 in original format)
-                const genres = parts.length >= 24 ? parts.slice(5, 24) : [];
-                
-                this.items.set(itemId, {
-                    title: title,
-                    year: year,
-                    genres: genres
-                });
-            }
-        }
-    }
-
-    buildMappings() {
-        // Build user and item mappings
-        const uniqueUsers = [...new Set(this.interactions.map(i => i.userId))].sort((a, b) => a - b);
-        const uniqueItems = [...new Set(this.interactions.map(i => i.itemId))].sort((a, b) => a - b);
-        
-        this.userMap.clear();
-        this.itemMap.clear();
-        this.reverseUserMap.clear();
-        this.reverseItemMap.clear();
-        
-        uniqueUsers.forEach((userId, index) => {
-            this.userMap.set(userId, index);
-            this.reverseUserMap.set(index, userId);
-        });
-        
-        uniqueItems.forEach((itemId, index) => {
-            this.itemMap.set(itemId, index);
-            this.reverseItemMap.set(index, itemId);
-        });
-    }
-
-    buildUserRatedItems() {
-        this.userRatedItems.clear();
-        this.userTopRated.clear();
-        
-        // Group interactions by user
-        this.interactions.forEach(interaction => {
-            const userId = interaction.userId;
-            if (!this.userRatedItems.has(userId)) {
-                this.userRatedItems.set(userId, []);
-            }
-            this.userRatedItems.get(userId).push(interaction);
-        });
-        
-        // Sort each user's ratings by rating (desc) and timestamp (desc)
-        this.userRatedItems.forEach((ratings, userId) => {
-            const sorted = ratings.sort((a, b) => {
-                if (b.rating !== a.rating) return b.rating - a.rating;
-                return b.timestamp - a.timestamp;
-            });
-            this.userTopRated.set(userId, sorted.slice(0, 10));
-        });
+        return {
+            canvas,
+            ctx,
+            title,
+            xLabel,
+            yLabel,
+            data: []
+        };
     }
 
     updateStatus(message) {
         document.getElementById('status').textContent = message;
+        console.log(message);
     }
 
-    async trainTraditional() {
-        if (!this.isDataLoaded) return;
+    async loadData() {
+        this.updateStatus('Loading MovieLens data...');
         
-        this.updateStatus('Training traditional model...');
-        document.getElementById('trainTraditional').disabled = true;
-        
-        this.traditionalModel = new TraditionalTwoTowerModel(
-            this.userMap.size,
-            this.itemMap.size,
-            32
-        );
-        
-        // Convert interactions to training format
-        const userIndices = this.interactions.map(i => this.userMap.get(i.userId));
-        const itemIndices = this.interactions.map(i => this.itemMap.get(i.itemId));
-        
-        await this.traditionalModel.train(
-            userIndices,
-            itemIndices,
-            (loss, epoch) => {
-                this.traditionalLossData.push({x: epoch, y: loss});
-                this.plotLoss('lossChartTraditional', this.traditionalLossData, 'Traditional Method Loss');
-                this.updateStatus(`Training traditional model - Epoch ${epoch}, Loss: ${loss.toFixed(4)}`);
-            }
-        );
-        
-        this.isTraditionalTrained = true;
-        this.updateTestButton();
-        this.updateStatus('Traditional model training completed!');
-        
-        // Visualize embeddings
-        this.visualizeEmbeddings(this.traditionalModel.getItemEmbeddings(), 'Traditional');
+        try {
+            // Load interactions data
+            const interactionsResponse = await fetch('data/u.data');
+            const interactionsText = await interactionsResponse.text();
+            
+            // Load items data
+            const itemsResponse = await fetch('data/u.item');
+            const itemsText = await itemsResponse.text();
+            
+            this.parseInteractions(interactionsText);
+            this.parseItems(itemsText);
+            this.buildIndexMaps();
+            this.analyzeUserBehavior();
+            
+            this.isDataLoaded = true;
+            document.getElementById('train').disabled = false;
+            this.updateStatus(`Data loaded: ${this.interactions.length} interactions, ${this.items.size} movies, ${this.users.size} users`);
+            
+        } catch (error) {
+            this.updateStatus('Error loading data: ' + error.message);
+        }
     }
 
-    async trainDeepLearning() {
-        if (!this.isDataLoaded) return;
+    parseInteractions(dataText) {
+        const lines = dataText.split('\n');
+        this.interactions = [];
         
-        this.updateStatus('Training deep learning model...');
-        document.getElementById('trainDeepLearning').disabled = true;
-        
-        // Prepare genre features
-        const genreMap = new Map();
-        let genreIndex = 0;
-        
-        this.items.forEach((item, itemId) => {
-            if (item.genres) {
-                item.genres.forEach(genre => {
-                    if (genre === '1' && !genreMap.has(genreIndex)) {
-                        // Map genre indices to feature names
-                        const genreNames = ['Unknown', 'Action', 'Adventure', 'Animation', 'Children', 
-                                          'Comedy', 'Crime', 'Documentary', 'Drama', 'Fantasy', 
-                                          'Film-Noir', 'Horror', 'Musical', 'Mystery', 'Romance', 
-                                          'Sci-Fi', 'Thriller', 'War', 'Western'];
-                        const genreName = genreNames[genreIndex] || `Genre${genreIndex}`;
-                        genreMap.set(genreIndex, genreName);
+        for (const line of lines) {
+            if (line.trim()) {
+                const [userId, itemId, rating, timestamp] = line.split('\t');
+                if (userId && itemId) {
+                    const interaction = {
+                        userId: parseInt(userId),
+                        itemId: parseInt(itemId),
+                        rating: parseFloat(rating),
+                        timestamp: parseInt(timestamp)
+                    };
+                    this.interactions.push(interaction);
+                    
+                    // Build user data structure
+                    if (!this.users.has(interaction.userId)) {
+                        this.users.set(interaction.userId, {
+                            id: interaction.userId,
+                            ratings: [],
+                            ratedItems: new Set()
+                        });
                     }
-                    genreIndex++;
-                });
+                    const user = this.users.get(interaction.userId);
+                    user.ratings.push(interaction);
+                    user.ratedItems.add(interaction.itemId);
+                }
             }
+        }
+    }
+
+    parseItems(dataText) {
+        const lines = dataText.split('\n');
+        this.items.clear();
+        
+        for (const line of lines) {
+            if (line.trim()) {
+                const parts = line.split('|');
+                if (parts.length >= 24) {
+                    const itemId = parseInt(parts[0]);
+                    const title = parts[1];
+                    
+                    // Extract year from title
+                    const yearMatch = title.match(/\((\d{4})\)/);
+                    const year = yearMatch ? parseInt(yearMatch[1]) : null;
+                    
+                    // Parse genre features (last 19 fields)
+                    const genreFeatures = parts.slice(5, 24).map(x => parseInt(x));
+                    
+                    this.items.set(itemId, {
+                        id: itemId,
+                        title: title.replace(/\(\d{4}\)/, '').trim(),
+                        year: year,
+                        genres: genreFeatures
+                    });
+                }
+            }
+        }
+    }
+
+    buildIndexMaps() {
+        // Create 0-based indices for users and items
+        const uniqueUsers = Array.from(this.users.keys()).sort((a, b) => a - b);
+        const uniqueItems = Array.from(this.items.keys()).sort((a, b) => a - b);
+        
+        this.userIndexMap.clear();
+        this.itemIndexMap.clear();
+        this.reverseUserIndex.clear();
+        this.reverseItemIndex.clear();
+        
+        uniqueUsers.forEach((userId, index) => {
+            this.userIndexMap.set(userId, index);
+            this.reverseUserIndex.set(index, userId);
         });
         
-        this.deepLearningModel = new DeepLearningTwoTowerModel(
-            this.userMap.size,
-            this.itemMap.size,
-            32,
-            genreMap.size
-        );
-        
-        // Convert interactions to training format
-        const userIndices = this.interactions.map(i => this.userMap.get(i.userId));
-        const itemIndices = this.interactions.map(i => this.itemMap.get(i.itemId));
-        
-        // Prepare genre features for each item
-        const itemGenreFeatures = [];
-        for (let i = 0; i < this.itemMap.size; i++) {
-            const originalItemId = this.reverseItemMap.get(i);
-            const item = this.items.get(originalItemId);
-            const genreVector = new Array(genreMap.size).fill(0);
+        uniqueItems.forEach((itemId, index) => {
+            this.itemIndexMap.set(itemId, index);
+            this.reverseItemIndex.set(index, itemId);
+        });
+    }
+
+    analyzeUserBehavior() {
+        // Calculate average ratings and sort user ratings
+        for (const user of this.users.values()) {
+            user.ratings.sort((a, b) => {
+                if (b.rating !== a.rating) {
+                    return b.rating - a.rating;
+                }
+                return b.timestamp - a.timestamp;
+            });
             
-            if (item && item.genres) {
-                item.genres.forEach((value, idx) => {
-                    if (value === '1' && idx < genreMap.size) {
-                        genreVector[idx] = 1;
-                    }
-                });
-            }
-            itemGenreFeatures.push(genreVector);
+            user.averageRating = user.ratings.reduce((sum, r) => sum + r.rating, 0) / user.ratings.length;
+        }
+    }
+
+    async trainModel() {
+        if (!this.isDataLoaded) {
+            this.updateStatus('Please load data first');
+            return;
         }
         
-        await this.deepLearningModel.train(
-            userIndices,
-            itemIndices,
-            itemGenreFeatures,
-            (loss, epoch) => {
-                this.deepLearningLossData.push({x: epoch, y: loss});
-                this.plotLoss('lossChartDeepLearning', this.deepLearningLossData, 'Deep Learning Loss');
-                this.updateStatus(`Training deep learning model - Epoch ${epoch}, Loss: ${loss.toFixed(4)}`);
-            }
-        );
+        this.updateStatus('Initializing model...');
         
-        this.isDeepLearningTrained = true;
-        this.updateTestButton();
-        this.updateStatus('Deep learning model training completed!');
+        const config = {
+            numUsers: this.users.size,
+            numItems: this.items.size,
+            embeddingDim: 32,
+            learningRate: 0.001,
+            epochs: 50,
+            batchSize: 1024,
+            useMLP: true
+        };
         
-        // Visualize embeddings
-        this.visualizeEmbeddings(this.deepLearningModel.getItemEmbeddings(), 'Deep Learning');
+        this.model = new TwoTowerModel(config);
+        
+        this.updateStatus('Starting training...');
+        document.getElementById('train').disabled = true;
+        
+        try {
+            const lossHistory = await this.model.train(
+                this.interactions,
+                this.userIndexMap,
+                this.itemIndexMap,
+                (epoch, loss) => this.onTrainingProgress(epoch, loss)
+            );
+            
+            this.isModelTrained = true;
+            document.getElementById('test').disabled = false;
+            this.updateStatus(`Training completed! Final loss: ${lossHistory[lossHistory.length - 1].toFixed(4)}`);
+            
+            // Visualize embeddings
+            await this.visualizeEmbeddings();
+            
+        } catch (error) {
+            this.updateStatus('Training error: ' + error.message);
+            document.getElementById('train').disabled = false;
+        }
     }
 
-    updateTestButton() {
-        document.getElementById('test').disabled = !(this.isTraditionalTrained || this.isDeepLearningTrained);
+    onTrainingProgress(epoch, loss) {
+        this.updateStatus(`Epoch ${epoch + 1}: loss = ${loss.toFixed(4)}`);
+        
+        // Update loss chart
+        this.lossChart.data.push({ x: epoch + 1, y: loss });
+        this.drawLineChart(this.lossChart);
     }
 
-    plotLoss(canvasId, data, title) {
-        const canvas = document.getElementById(canvasId);
-        const ctx = canvas.getContext('2d');
-        const width = canvas.width;
-        const height = canvas.height;
-        
-        ctx.clearRect(0, 0, width, height);
+    drawLineChart(chart) {
+        const { ctx, canvas, data, title, xLabel, yLabel } = chart;
         
         if (data.length === 0) return;
         
-        // Find data bounds
+        // Clear canvas
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // Set up margins and scaling
+        const margin = 40;
+        const width = canvas.width - 2 * margin;
+        const height = canvas.height - 2 * margin;
+        
+        // Find data ranges
         const xValues = data.map(d => d.x);
         const yValues = data.map(d => d.y);
         const xMin = Math.min(...xValues);
@@ -288,251 +246,284 @@ class MovieLensApp {
         const yMin = Math.min(...yValues);
         const yMax = Math.max(...yValues);
         
-        // Add some padding
-        const xRange = xMax - xMin || 1;
-        const yRange = yMax - yMin || 1;
-        const padding = 0.1;
-        
-        const scaleX = (x) => (x - xMin + padding * xRange) / (xRange * (1 + 2 * padding)) * width;
-        const scaleY = (y) => height - (y - yMin + padding * yRange) / (yRange * (1 + 2 * padding)) * height;
+        // Scale functions
+        const scaleX = (x) => margin + (x - xMin) / (xMax - xMin) * width;
+        const scaleY = (y) => canvas.height - margin - (y - yMin) / (yMax - yMin) * height;
         
         // Draw axes
         ctx.strokeStyle = '#ccc';
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(scaleX(xMin), scaleY(0));
-        ctx.lineTo(scaleX(xMax), scaleY(0));
+        ctx.moveTo(margin, margin);
+        ctx.lineTo(margin, canvas.height - margin);
+        ctx.lineTo(canvas.width - margin, canvas.height - margin);
         ctx.stroke();
         
-        ctx.beginPath();
-        ctx.moveTo(scaleX(0), scaleY(yMin));
-        ctx.lineTo(scaleX(0), scaleY(yMax));
-        ctx.stroke();
-        
-        // Draw loss curve
-        ctx.strokeStyle = '#007cba';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        
-        data.forEach((point, i) => {
-            if (i === 0) {
-                ctx.moveTo(scaleX(point.x), scaleY(point.y));
-            } else {
-                ctx.lineTo(scaleX(point.x), scaleY(point.y));
-            }
-        });
-        ctx.stroke();
-        
-        // Draw title
+        // Draw labels
         ctx.fillStyle = '#333';
         ctx.font = '12px Arial';
-        ctx.fillText(title, 10, 20);
+        ctx.textAlign = 'center';
+        ctx.fillText(xLabel, canvas.width / 2, canvas.height - 10);
+        ctx.save();
+        ctx.translate(10, canvas.height / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillText(yLabel, 0, 0);
+        ctx.restore();
+        
+        ctx.textAlign = 'left';
+        ctx.fillText(title, margin, 20);
+        
+        // Draw data line
+        if (data.length > 1) {
+            ctx.strokeStyle = '#007cba';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(scaleX(data[0].x), scaleY(data[0].y));
+            
+            for (let i = 1; i < data.length; i++) {
+                ctx.lineTo(scaleX(data[i].x), scaleY(data[i].y));
+            }
+            ctx.stroke();
+        }
+        
+        // Draw data points
+        ctx.fillStyle = '#007cba';
+        for (const point of data) {
+            ctx.beginPath();
+            ctx.arc(scaleX(point.x), scaleY(point.y), 3, 0, 2 * Math.PI);
+            ctx.fill();
+        }
     }
 
-    visualizeEmbeddings(embeddings, method) {
-        if (!embeddings || embeddings.length === 0) return;
+    async visualizeEmbeddings() {
+        if (!this.model) return;
         
-        // Sample embeddings for visualization (first 1000)
-        const sampleSize = Math.min(1000, embeddings.length);
-        const sampleEmbeddings = embeddings.slice(0, sampleSize);
+        this.updateStatus('Computing embedding visualization...');
         
-        // Simple PCA implementation for 2D projection
-        const projected = this.simplePCA(sampleEmbeddings, 2);
+        try {
+            // Get a sample of item embeddings
+            const sampleSize = Math.min(200, this.items.size);
+            const sampleIndices = [];
+            const sampleTitles = [];
+            
+            // Sample diverse items
+            const itemsArray = Array.from(this.items.values());
+            for (let i = 0; i < sampleSize; i++) {
+                const item = itemsArray[Math.floor(Math.random() * itemsArray.length)];
+                const itemIndex = this.itemIndexMap.get(item.id);
+                sampleIndices.push(itemIndex);
+                sampleTitles.push(item.title);
+            }
+            
+            const embeddings = await this.model.getItemEmbeddings(sampleIndices);
+            const embeddingArray = await embeddings.array();
+            
+            // Simple PCA using power iteration
+            const projected = this.simplePCA(embeddingArray, 2);
+            
+            // Draw on canvas
+            this.drawEmbeddingProjection(projected, sampleTitles);
+            
+        } catch (error) {
+            console.error('Error visualizing embeddings:', error);
+        }
+    }
+
+    simplePCA(embeddings, dimensions = 2) {
+        // Center the data
+        const centered = [];
+        const means = [];
         
-        const canvas = document.getElementById('embeddingChart');
-        const ctx = canvas.getContext('2d');
-        const width = canvas.width;
-        const height = canvas.height;
+        for (let j = 0; j < embeddings[0].length; j++) {
+            let sum = 0;
+            for (let i = 0; i < embeddings.length; i++) {
+                sum += embeddings[i][j];
+            }
+            means[j] = sum / embeddings.length;
+        }
         
-        ctx.clearRect(0, 0, width, height);
+        for (let i = 0; i < embeddings.length; i++) {
+            centered.push(embeddings[i].map((val, j) => val - means[j]));
+        }
+        
+        // Simple 2D projection using first two principal components
+        const projected = [];
+        for (let i = 0; i < centered.length; i++) {
+            // Use first two dimensions as simple projection (for demo purposes)
+            // In production, you'd implement proper PCA
+            const x = centered[i][0] + centered[i][1] * 0.5;
+            const y = centered[i][2] + centered[i][3] * 0.5;
+            projected.push({ x, y });
+        }
+        
+        return projected;
+    }
+
+    drawEmbeddingProjection(projections, titles) {
+        const { ctx, canvas } = this.embeddingChart;
+        
+        // Clear canvas
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
         
         // Find bounds
-        const xValues = projected.map(p => p[0]);
-        const yValues = projected.map(p => p[1]);
+        const xValues = projections.map(p => p.x);
+        const yValues = projections.map(p => p.y);
         const xMin = Math.min(...xValues);
         const xMax = Math.max(...xValues);
         const yMin = Math.min(...yValues);
         const yMax = Math.max(...yValues);
         
-        const scaleX = (x) => (x - xMin) / (xMax - xMin) * (width - 40) + 20;
-        const scaleY = (y) => (y - yMin) / (yMax - yMin) * (height - 40) + 20;
+        // Scale function
+        const scaleX = (x) => (x - xMin) / (xMax - xMin) * (canvas.width - 40) + 20;
+        const scaleY = (y) => (y - yMin) / (yMax - yMin) * (canvas.height - 40) + 20;
         
         // Draw points
         ctx.fillStyle = '#007cba';
-        projected.forEach(point => {
+        for (let i = 0; i < projections.length; i++) {
+            const x = scaleX(projections[i].x);
+            const y = scaleY(projections[i].y);
+            
             ctx.beginPath();
-            ctx.arc(scaleX(point[0]), scaleY(point[1]), 2, 0, 2 * Math.PI);
+            ctx.arc(x, y, 3, 0, 2 * Math.PI);
             ctx.fill();
-        });
-        
-        // Draw title
-        ctx.fillStyle = '#333';
-        ctx.font = '12px Arial';
-        ctx.fillText(`${method} Item Embeddings (PCA)`, 10, 20);
-    }
-
-    simplePCA(embeddings, dimensions) {
-        // Simple PCA using power iteration
-        const result = [];
-        
-        for (let i = 0; i < embeddings.length; i++) {
-            // For simplicity, just take first two dimensions of normalized embeddings
-            const emb = embeddings[i];
-            const norm = Math.sqrt(emb.reduce((sum, val) => sum + val * val, 0));
-            const normalized = emb.map(val => val / norm);
-            result.push([normalized[0] || 0, normalized[1] || 0]);
         }
         
-        return result;
+        // Add title
+        ctx.fillStyle = '#333';
+        ctx.font = '14px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Item Embeddings (2D Projection)', canvas.width / 2, 20);
     }
 
-    async testRecommendations() {
-        if (!this.isTraditionalTrained && !this.isDeepLearningTrained) return;
-        
-        this.updateStatus('Testing recommendations...');
-        
-        // Find users with at least 20 ratings
-        const qualifiedUsers = [...this.userRatedItems.entries()]
-            .filter(([_, ratings]) => ratings.length >= 20)
-            .map(([userId]) => userId);
-        
-        if (qualifiedUsers.length === 0) {
-            this.updateStatus('No qualified users found (need users with ≥20 ratings)');
+    async testModel() {
+        if (!this.isModelTrained) {
+            this.updateStatus('Please train the model first');
             return;
         }
         
-        // Pick random user
-        const randomUser = qualifiedUsers[Math.floor(Math.random() * qualifiedUsers.length)];
-        const userIndex = this.userMap.get(randomUser);
+        this.updateStatus('Generating recommendations...');
         
-        // Get user's top rated movies
-        const topRated = this.userTopRated.get(randomUser) || [];
-        
-        // Generate recommendations from both models
-        let traditionalRecs = [];
-        let deepLearningRecs = [];
-        
-        if (this.isTraditionalTrained) {
-            traditionalRecs = await this.traditionalModel.getRecommendations(
-                userIndex, 
-                Array.from(this.itemMap.values()), 
-                topRated.map(r => this.itemMap.get(r.itemId))
-            );
-        }
-        
-        if (this.isDeepLearningTrained) {
-            deepLearningRecs = await this.deepLearningModel.getRecommendations(
+        try {
+            // Find users with at least 20 ratings
+            const qualifiedUsers = Array.from(this.users.values())
+                .filter(user => user.ratings.length >= 20);
+            
+            if (qualifiedUsers.length === 0) {
+                this.updateStatus('No users with sufficient ratings found');
+                return;
+            }
+            
+            // Pick random user
+            const randomUser = qualifiedUsers[Math.floor(Math.random() * qualifiedUsers.length)];
+            const userIndex = this.userIndexMap.get(randomUser.id);
+            
+            // Get user's top 10 rated movies
+            const topRated = randomUser.ratings.slice(0, 10).map(rating => ({
+                title: this.items.get(rating.itemId).title,
+                rating: rating.rating
+            }));
+            
+            // Get model recommendations
+            const recommendations = await this.model.getRecommendations(
                 userIndex,
-                Array.from(this.itemMap.values()),
-                topRated.map(r => this.itemMap.get(r.itemId))
+                randomUser.ratedItems,
+                this.itemIndexMap,
+                this.reverseItemIndex,
+                this.items,
+                10
             );
+            
+            // Display results
+            this.displayRecommendations(randomUser, topRated, recommendations);
+            this.updateStatus(`Recommendations generated for user ${randomUser.id}`);
+            
+        } catch (error) {
+            this.updateStatus('Error generating recommendations: ' + error.message);
         }
-        
-        // Convert indices back to movie information
-        const traditionalMovies = traditionalRecs.map(idx => {
-            const originalId = this.reverseItemMap.get(idx);
-            return this.items.get(originalId);
-        }).filter(movie => movie);
-        
-        const deepLearningMovies = deepLearningRecs.map(idx => {
-            const originalId = this.reverseItemMap.get(idx);
-            return this.items.get(originalId);
-        }).filter(movie => movie);
-        
-        // Display results
-        this.displayResults(topRated, traditionalMovies, deepLearningMovies);
-        this.updateStatus(`Recommendations generated for user ${randomUser}`);
     }
 
-    displayResults(topRated, traditionalRecs, deepLearningRecs) {
-        // Display traditional results
-        const traditionalContainer = document.getElementById('resultsTraditional');
-        traditionalContainer.innerHTML = this.createResultsTable(topRated, traditionalRecs, 'Traditional');
+    displayRecommendations(user, topRated, recommendations) {
+        // Update user info
+        document.getElementById('userInfo').innerHTML = `
+            <p><strong>User ID:</strong> ${user.id} | 
+            <strong>Total Ratings:</strong> ${user.ratings.length} | 
+            <strong>Average Rating:</strong> ${user.averageRating.toFixed(2)}</p>
+        `;
         
-        // Display deep learning results
-        const deepLearningContainer = document.getElementById('resultsDeepLearning');
-        deepLearningContainer.innerHTML = this.createResultsTable(topRated, deepLearningRecs, 'Deep Learning');
+        // Populate top rated table
+        const ratingsTable = document.getElementById('userRatingsTable').querySelector('tbody');
+        ratingsTable.innerHTML = '';
         
-        // Display comparison
-        const comparisonContainer = document.getElementById('resultsComparison');
-        comparisonContainer.innerHTML = this.createComparisonTable(traditionalRecs, deepLearningRecs);
+        topRated.forEach(movie => {
+            const row = ratingsTable.insertRow();
+            row.insertCell(0).textContent = movie.title;
+            row.insertCell(1).textContent = '★'.repeat(Math.round(movie.rating)) + ` (${movie.rating})`;
+        });
+        
+        // Populate recommendations table
+        const recsTable = document.getElementById('recommendationsTable').querySelector('tbody');
+        recsTable.innerHTML = '';
+        
+        recommendations.forEach(rec => {
+            const row = recsTable.insertRow();
+            row.insertCell(0).textContent = rec.title;
+            row.insertCell(1).textContent = rec.score.toFixed(4);
+        });
     }
 
-    createResultsTable(topRated, recommendations, method) {
-        let html = `<table>
-            <tr>
-                <th>Top Rated Movies</th>
-                <th>${method} Recommendations</th>
-            </tr>`;
+    // Non-deep learning method for comparison
+    getNonDLRecommendations(userId, topK = 10) {
+        const user = this.users.get(userId);
+        if (!user) return [];
         
-        const maxRows = Math.max(topRated.length, recommendations.length);
+        // Create user profile as average of rated movie genre vectors
+        const userProfile = new Array(19).fill(0);
+        let ratedCount = 0;
         
-        for (let i = 0; i < maxRows; i++) {
-            const rated = topRated[i];
-            const rec = recommendations[i];
-            
-            html += '<tr>';
-            
-            // Top rated column
-            if (rated) {
-                const movie = this.items.get(rated.itemId);
-                html += `<td>${movie ? movie.title : `Item ${rated.itemId}`} (${rated.rating}★)</td>`;
-            } else {
-                html += '<td></td>';
+        for (const rating of user.ratings) {
+            const item = this.items.get(rating.itemId);
+            if (item && item.genres) {
+                for (let i = 0; i < 19; i++) {
+                    userProfile[i] += item.genres[i] * rating.rating;
+                }
+                ratedCount++;
             }
-            
-            // Recommendations column
-            if (rec) {
-                html += `<td>${rec.title}${rec.year ? ` (${rec.year})` : ''}</td>`;
-            } else {
-                html += '<td></td>';
+        }
+        
+        // Normalize
+        if (ratedCount > 0) {
+            for (let i = 0; i < 19; i++) {
+                userProfile[i] /= ratedCount;
             }
-            
-            html += '</tr>';
         }
         
-        html += '</table>';
-        return html;
-    }
-
-    createComparisonTable(traditionalRecs, deepLearningRecs) {
-        let html = `<table>
-            <tr>
-                <th>Traditional</th>
-                <th>Deep Learning</th>
-                <th>Match</th>
-            </tr>`;
+        // Calculate cosine similarity with all unrated items
+        const scores = [];
+        const userNorm = Math.sqrt(userProfile.reduce((sum, val) => sum + val * val, 0));
         
-        const maxRows = Math.max(traditionalRecs.length, deepLearningRecs.length);
-        const traditionalTitles = new Set(traditionalRecs.map(m => m.title));
-        
-        for (let i = 0; i < maxRows; i++) {
-            const traditional = traditionalRecs[i];
-            const deepLearning = deepLearningRecs[i];
-            
-            html += '<tr>';
-            html += `<td>${traditional ? traditional.title : ''}</td>`;
-            html += `<td>${deepLearning ? deepLearning.title : ''}</td>`;
-            
-            // Check if recommendations match
-            const match = traditional && deepLearning && 
-                         traditionalTitles.has(deepLearning.title) ? '✓' : '';
-            html += `<td style="text-align: center;">${match}</td>`;
-            html += '</tr>';
+        for (const [itemId, item] of this.items) {
+            if (!user.ratedItems.has(itemId)) {
+                const itemVector = item.genres;
+                const itemNorm = Math.sqrt(itemVector.reduce((sum, val) => sum + val * val, 0));
+                
+                if (userNorm > 0 && itemNorm > 0) {
+                    let dotProduct = 0;
+                    for (let i = 0; i < 19; i++) {
+                        dotProduct += userProfile[i] * itemVector[i];
+                    }
+                    const similarity = dotProduct / (userNorm * itemNorm);
+                    scores.push({
+                        itemId,
+                        title: item.title,
+                        score: similarity
+                    });
+                }
+            }
         }
         
-        // Add summary row
-        const overlap = traditionalRecs.filter(t => 
-            deepLearningRecs.some(d => d && t && d.title === t.title)
-        ).length;
-        
-        html += `<tr style="background-color: #f8f9fa;">
-            <td colspan="2"><strong>Overlap: ${overlap} movies</strong></td>
-            <td style="text-align: center;"><strong>${overlap}</strong></td>
-        </tr>`;
-        
-        html += '</table>';
-        return html;
+        // Return top K
+        return scores.sort((a, b) => b.score - a.score).slice(0, topK);
     }
 }
 
