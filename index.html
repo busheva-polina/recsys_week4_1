@@ -2,91 +2,87 @@
 <html>
 <head>
     <title>Two-Tower Movie Recommender</title>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0"></script>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; }
         .container { margin: 20px 0; }
+        .controls { background: #f5f5f5; padding: 15px; border-radius: 5px; }
         .control-group { margin: 10px 0; }
-        label { display: inline-block; width: 200px; }
-        button { margin: 5px; padding: 8px 16px; }
+        label { display: inline-block; width: 180px; }
+        button { padding: 8px 16px; margin: 5px; cursor: pointer; }
+        .status { background: #e9e9e9; padding: 10px; border-radius: 3px; margin: 10px 0; }
         canvas { border: 1px solid #ccc; margin: 10px 0; }
         table { border-collapse: collapse; width: 100%; margin: 10px 0; }
         th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-        th { background-color: #f2f2f2; }
-        .status { margin: 10px 0; padding: 10px; background: #f0f0f0; }
-        .charts { display: flex; flex-wrap: wrap; }
-        .chart-container { margin: 10px; }
+        th { background: #f2f2f2; }
+        .comparison-table { display: flex; gap: 10px; }
+        .table-column { flex: 1; }
     </style>
 </head>
 <body>
     <h1>Two-Tower Movie Recommender (MovieLens 100K)</h1>
     
-    <div class="status" id="status">Ready to load data...</div>
-    
+    <div class="controls">
+        <div class="control-group">
+            <label>Max Interactions:</label>
+            <input type="number" id="maxInteractions" value="80000" min="1000" max="100000">
+        </div>
+        <div class="control-group">
+            <label>Embedding Dim:</label>
+            <input type="number" id="embeddingDim" value="32" min="8" max="128">
+        </div>
+        <div class="control-group">
+            <label>Deep Hidden Dim:</label>
+            <input type="number" id="hiddenDim" value="64" min="16" max="256">
+        </div>
+        <div class="control-group">
+            <label>Batch Size:</label>
+            <input type="number" id="batchSize" value="512" min="32" max="2048">
+        </div>
+        <div class="control-group">
+            <label>Epochs:</label>
+            <input type="number" id="epochs" value="10" min="1" max="50">
+        </div>
+        <div class="control-group">
+            <label>Learning Rate:</label>
+            <input type="number" id="learningRate" value="0.001" step="0.0001" min="0.0001" max="0.01">
+        </div>
+        <div class="control-group">
+            <label>Loss Type:</label>
+            <select id="lossType">
+                <option value="softmax">In-batch Softmax</option>
+                <option value="bpr">BPR (Bayesian Personalized Ranking)</option>
+            </select>
+        </div>
+        <div class="control-group">
+            <label>Train Baseline Too?</label>
+            <select id="trainBaseline">
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+            </select>
+        </div>
+    </div>
+
+    <button id="loadData">Load Data</button>
+    <button id="train">Train</button>
+    <button id="test">Test</button>
+
+    <div id="status" class="status">Ready to load data...</div>
+
     <div class="container">
-        <button onclick="app.loadData()">Load Data</button>
-        <button onclick="app.train()">Train</button>
-        <button onclick="app.test()">Test</button>
+        <h3>Training Loss</h3>
+        <canvas id="lossChart" width="800" height="400"></canvas>
     </div>
-    
-    <div class="control-group">
-        <label>Max Interactions:</label>
-        <input type="number" id="maxInteractions" value="80000" min="1000" max="100000">
+
+    <div class="container">
+        <h3>Item Embeddings (PCA)</h3>
+        <canvas id="pcaChart" width="800" height="400"></canvas>
     </div>
-    
-    <div class="control-group">
-        <label>Embedding Dimension:</label>
-        <input type="number" id="embeddingDim" value="32" min="8" max="128">
+
+    <div class="container">
+        <h3>Recommendation Results</h3>
+        <div id="results"></div>
     </div>
-    
-    <div class="control-group">
-        <label>Deep Hidden Dimension:</label>
-        <input type="number" id="hiddenDim" value="64" min="16" max="256">
-    </div>
-    
-    <div class="control-group">
-        <label>Batch Size:</label>
-        <input type="number" id="batchSize" value="512" min="32" max="2048">
-    </div>
-    
-    <div class="control-group">
-        <label>Epochs:</label>
-        <input type="number" id="epochs" value="10" min="1" max="50">
-    </div>
-    
-    <div class="control-group">
-        <label>Learning Rate:</label>
-        <input type="number" id="learningRate" value="0.001" step="0.0001" min="0.0001" max="0.01">
-    </div>
-    
-    <div class="control-group">
-        <label>Loss Type:</label>
-        <select id="lossType">
-            <option value="softmax">In-batch Softmax</option>
-            <option value="bpr">BPR (Bayesian Personalized Ranking)</option>
-        </select>
-    </div>
-    
-    <div class="control-group">
-        <label>Train Baseline Too?</label>
-        <select id="trainBaseline">
-            <option value="yes">Yes</option>
-            <option value="no">No</option>
-        </select>
-    </div>
-    
-    <div class="charts">
-        <div class="chart-container">
-            <h3>Training Loss</h3>
-            <canvas id="lossChart" width="600" height="400"></canvas>
-        </div>
-        <div class="chart-container">
-            <h3>Item Embeddings (PCA)</h3>
-            <canvas id="pcaChart" width="600" height="400"></canvas>
-        </div>
-    </div>
-    
-    <div id="results"></div>
 
     <script src="two-tower.js"></script>
     <script src="app.js"></script>
