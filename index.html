@@ -4,7 +4,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MovieLens Two-Tower Recommendation</title>
+    <title>MovieLens Two-Tower Recommender</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -18,36 +19,41 @@
             padding: 20px;
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
         }
         .controls {
-            margin: 20px 0;
             display: flex;
             gap: 10px;
-            flex-wrap: wrap;
+            margin-bottom: 20px;
         }
         button {
             padding: 10px 20px;
-            background-color: #007cba;
+            background: #007cba;
             color: white;
             border: none;
             border-radius: 4px;
             cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover {
+            background: #005a87;
         }
         button:disabled {
-            background-color: #ccc;
+            background: #cccccc;
             cursor: not-allowed;
         }
         .status {
-            margin: 10px 0;
             padding: 10px;
-            background-color: #f0f0f0;
+            background: #f0f0f0;
             border-radius: 4px;
+            margin-bottom: 20px;
+            min-height: 20px;
         }
         .charts {
             display: flex;
             flex-wrap: wrap;
             gap: 20px;
-            margin: 20px 0;
+            margin-bottom: 20px;
         }
         .chart-container {
             flex: 1;
@@ -58,14 +64,15 @@
             border-radius: 4px;
             background: white;
         }
-        .results {
-            margin: 20px 0;
-        }
-        .comparison-table {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
+        .comparison-tables {
+            display: flex;
             gap: 20px;
-            margin-top: 20px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .table-container {
+            flex: 1;
+            min-width: 300px;
         }
         table {
             width: 100%;
@@ -78,26 +85,44 @@
             border-bottom: 1px solid #ddd;
         }
         th {
-            background-color: #f8f9fa;
+            background: #f8f9fa;
             font-weight: bold;
         }
-        .method-title {
-            text-align: center;
-            margin-bottom: 10px;
-            font-weight: bold;
-            color: #333;
+        tr:hover {
+            background: #f5f5f5;
+        }
+        .side-by-side {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .user-section {
+            flex: 1;
+        }
+        .info {
+            background: #e7f3ff;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>MovieLens Two-Tower Recommendation System</h1>
-        <p>Compare traditional collaborative filtering with deep learning approaches</p>
+        <h1>🎬 MovieLens Two-Tower Recommender</h1>
+        <div class="info">
+            <p><strong>Usage tips:</strong></p>
+            <ul>
+                <li>Training takes 2-5 minutes on modern browsers (30-50 epochs recommended)</li>
+                <li>For GitHub Pages hosting, place u.data and u.item in a 'data' folder</li>
+                <li>Start with fewer epochs to test functionality</li>
+                <li>Compare Deep Learning vs Non-DL methods in the tables below</li>
+            </ul>
+        </div>
         
         <div class="controls">
             <button id="loadData">Load Data</button>
-            <button id="trainTraditional" disabled>Train Traditional</button>
-            <button id="trainDeepLearning" disabled>Train Deep Learning</button>
+            <button id="train" disabled>Train Model</button>
             <button id="test" disabled>Test Recommendations</button>
         </div>
         
@@ -105,40 +130,108 @@
         
         <div class="charts">
             <div class="chart-container">
-                <div class="method-title">Traditional Method Loss</div>
-                <canvas id="lossChartTraditional" width="400" height="300"></canvas>
+                <h3>Training Loss</h3>
+                <canvas id="lossChart" width="400" height="300"></canvas>
             </div>
             <div class="chart-container">
-                <div class="method-title">Deep Learning Loss</div>
-                <canvas id="lossChartDeepLearning" width="400" height="300"></canvas>
-            </div>
-            <div class="chart-container">
-                <div class="method-title">Item Embeddings (PCA)</div>
+                <h3>Item Embeddings (PCA)</h3>
                 <canvas id="embeddingChart" width="400" height="300"></canvas>
             </div>
         </div>
-        
-        <div class="results">
-            <h2>Recommendation Results</h2>
-            <div class="comparison-table">
-                <div>
-                    <div class="method-title">Traditional Method</div>
-                    <div id="resultsTraditional"></div>
+
+        <div class="comparison-tables">
+            <div class="table-container">
+                <h3>📊 Deep Learning Method (Two-Tower + MLP)</h3>
+                <table id="dlTable">
+                    <thead>
+                        <tr>
+                            <th>Component</th>
+                            <th>Implementation</th>
+                            <th>Features Used</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>User Tower</td><td>Embedding Layer</td><td>User ID</td></tr>
+                        <tr><td>Item Tower</td><td>MLP with 1 Hidden Layer</td><td>Genre Features (19 dim)</td></tr>
+                        <tr><td>Scoring</td><td>Dot Product</td><td>User × Item Embeddings</td></tr>
+                        <tr><td>Loss</td><td>In-batch Softmax</td><td>Contrastive Learning</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            
+            <div class="table-container">
+                <h3>📈 Non-Deep Learning Method</h3>
+                <table id="nonDlTable">
+                    <thead>
+                        <tr>
+                            <th>Component</th>
+                            <th>Implementation</th>
+                            <th>Features Used</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>User Representation</td><td>Average Rating Vector</td><td>Item Ratings</td></tr>
+                        <tr><td>Item Representation</td><td>Genre Vector</td><td>Genre Features</td></tr>
+                        <tr><td>Scoring</td><td>Cosine Similarity</td><td>User × Item Vectors</td></tr>
+                        <tr><td>Recommendation</td><td>Nearest Neighbors</td><td>Top-K Similar</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            
+            <div class="table-container">
+                <h3>⚖️ Method Comparison</h3>
+                <table id="comparisonTable">
+                    <thead>
+                        <tr>
+                            <th>Aspect</th>
+                            <th>Deep Learning</th>
+                            <th>Non-DL</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Accuracy</td><td>High (learned embeddings)</td><td>Medium (handcrafted)</td></tr>
+                        <tr><td>Training Time</td><td>Slower (2-5 min)</td><td>Instant</td></tr>
+                        <tr><td>Personalization</td><td>High</td><td>Basic</td></tr>
+                        <tr><td>Cold Start</td><td>Better with genres</td><td>Good with genres</td></tr>
+                        <tr><td>Interpretability</td><td>Lower</td><td>Higher</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div id="recommendations" class="container">
+            <h3>🎯 User Recommendations</h3>
+            <div id="userInfo"></div>
+            <div class="side-by-side">
+                <div class="user-section">
+                    <h4>User's Top 10 Rated Movies</h4>
+                    <table id="userRatingsTable">
+                        <thead>
+                            <tr>
+                                <th>Movie Title</th>
+                                <th>Rating</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
                 </div>
-                <div>
-                    <div class="method-title">Deep Learning</div>
-                    <div id="resultsDeepLearning"></div>
-                </div>
-                <div>
-                    <div class="method-title">Comparison</div>
-                    <div id="resultsComparison"></div>
+                <div class="user-section">
+                    <h4>Model's Top 10 Recommendations</h4>
+                    <table id="recommendationsTable">
+                        <thead>
+                            <tr>
+                                <th>Movie Title</th>
+                                <th>Score</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
                 </div>
             </div>
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.15.0/dist/tf.min.js"></script>
-    <script src="two-tower.js"></script>
     <script src="app.js"></script>
+    <script src="two-tower.js"></script>
 </body>
 </html>
