@@ -1,280 +1,265 @@
 // two-tower.js
-class TraditionalTwoTowerModel {
-    constructor(numUsers, numItems, embeddingDim) {
-        this.numUsers = numUsers;
-        this.numItems = numItems;
-        this.embeddingDim = embeddingDim;
+class TwoTowerModel {
+    constructor(config) {
+        this.config = {
+            numUsers: 943,
+            numItems: 1682,
+            embeddingDim: 32,
+            learningRate: 0.001,
+            epochs: 50,
+            batchSize: 1024,
+            useMLP: true,
+            mlpHiddenUnits: 64,
+            ...config
+        };
         
-        // Initialize embeddings with random values
-        this.userEmbeddings = Array.from({length: numUsers}, () => 
-            Array.from({length: embeddingDim}, () => (Math.random() - 0.5) * 0.1)
-        );
-        this.itemEmbeddings = Array.from({length: numItems}, () => 
-            Array.from({length: embeddingDim}, () => (Math.random() - 0.5) * 0.1)
-        );
+        this.userEmbedding = null;
+        this.itemEmbedding = null;
+        this.mlpLayers = null;
+        this.optimizer = null;
+        this.isInitialized = false;
         
-        this.learningRate = 0.01;
+        this.initializeModel();
     }
 
-    async train(userIndices, itemIndices, progressCallback) {
-        const epochs = 50;
-        const batchSize = 512;
+    initializeModel() {
+        // Two-tower model: user tower (embedding) and item tower (MLP with genre features)
+        const { numUsers, numItems, embeddingDim, useMLP, mlpHiddenUnits } = this.config;
         
+        // User tower: simple embedding lookup
+        this.userEmbedding = tf.variable(
+            tf.randomNormal([numUsers, embeddingDim], 0, 0.05)
+        );
+        
+        // Item tower: either simple embedding or MLP with genre features
+        if (useMLP) {
+            // MLP with one hidden layer for item tower
+            this.itemEmbedding = tf.variable(
+                tf.randomNormal([numItems, embeddingDim], 0, 0.05)
+            );
+            
+            // MLP layers for processing genre features
+            this.mlpLayers = {
+                hidden: tf.layers.dense({
+                    units: mlpHiddenUnits,
+                    activation: 'relu',
+                    inputShape: [19] // 19 genre features
+                }),
+                output: tf.layers.dense({
+                    units: embeddingDim,
+                    activation: 'linear'
+                })
+            };
+        } else {
+            // Simple item embedding (non-MLP baseline)
+            this.itemEmbedding = tf.variable(
+                tf.randomNormal([numItems, embeddingDim], 0, 0.05)
+            );
+        }
+        
+        this.optimizer = tf.train.adam(this.config.learningRate);
+        this.isInitialized = true;
+    }
+
+    userForward(userIndices) {
+        // User tower: embedding lookup
+        return tf.gather(this.userEmbedding, userIndices);
+    }
+
+    async itemForward(itemIndices, genreFeatures = null) {
+        // Item tower: either embedding lookup or MLP with genre features
+        if (this.config.useMLP && genreFeatures) {
+            // Use MLP to process genre features
+            const genreTensor = tf.tensor2d(genreFeatures);
+            const hidden = this.mlpLayers.hidden.apply(genreTensor);
+            const mlpOutput = this.mlpLayers.output.apply(hidden);
+            
+            // Combine MLP output with item embedding
+            const itemEmb = tf.gather(this.itemEmbedding, itemIndices);
+            return tf.add(mlpOutput, itemEmb); // Residual connection
+            
+        } else {
+            // Simple embedding lookup
+            return tf.gather(this.itemEmbedding, itemIndices);
+        }
+    }
+
+    score(userEmbeddings, itemEmbeddings) {
+        // Dot product scoring: u · i
+        return tf.sum(tf.mul(userEmbeddings, itemEmbeddings), -1);
+    }
+
+    computeLoss(userEmbeddings, positiveItemEmbeddings, negativeItemEmbeddings = null) {
+        // In-batch sampled softmax loss
+        const batchSize = userEmbeddings.shape[0];
+        const embeddingDim = userEmbeddings.shape[1];
+        
+        // Compute all pairwise scores: U @ I^T
+        const scores = tf.matMul(userEmbeddings, positiveItemEmbeddings, false, true);
+        
+        // Labels are diagonal (each user's positive item)
+        const labels = tf.oneHot(tf.range(0, batchSize), batchSize);
+        
+        // Softmax cross entropy loss
+        const loss = tf.losses.softmaxCrossEntropy(labels, scores);
+        
+        return loss;
+    }
+
+    async train(interactions, userIndexMap, itemIndexMap, progressCallback = null) {
+        if (!this.isInitialized) {
+            throw new Error('Model not initialized');
+        }
+
+        const { epochs, batchSize } = this.config;
+        const lossHistory = [];
+        
+        // Convert interactions to indexed format
+        const indexedInteractions = interactions.map(interaction => ({
+            userIndex: userIndexMap.get(interaction.userId),
+            itemIndex: itemIndexMap.get(interaction.itemId),
+            rating: interaction.rating
+        })).filter(interaction => 
+            interaction.userIndex !== undefined && 
+            interaction.itemIndex !== undefined
+        );
+
         for (let epoch = 0; epoch < epochs; epoch++) {
-            let totalLoss = 0;
+            let epochLoss = 0;
             let batchCount = 0;
+            
+            // Shuffle interactions
+            const shuffled = indexedInteractions.sort(() => Math.random() - 0.5);
             
             // Process in batches
-            for (let i = 0; i < userIndices.length; i += batchSize) {
-                const batchUsers = userIndices.slice(i, i + batchSize);
-                const batchItems = itemIndices.slice(i, i + batchSize);
+            for (let i = 0; i < shuffled.length; i += batchSize) {
+                const batch = shuffled.slice(i, i + batchSize);
+                if (batch.length === 0) continue;
                 
-                const batchLoss = this.trainBatch(batchUsers, batchItems);
-                totalLoss += batchLoss;
+                const loss = await this.trainBatch(batch);
+                epochLoss += loss;
                 batchCount++;
+                
+                // Clean up memory
+                tf.engine().startScope();
+                tf.engine().endScope();
             }
             
-            const avgLoss = totalLoss / batchCount;
+            const avgLoss = epochLoss / batchCount;
+            lossHistory.push(avgLoss);
+            
             if (progressCallback) {
-                progressCallback(avgLoss, epoch + 1);
+                await progressCallback(epoch, avgLoss);
             }
             
-            // Early stopping if loss is NaN
-            if (isNaN(avgLoss)) break;
-        }
-    }
-
-    trainBatch(userIndices, itemIndices) {
-        let totalLoss = 0;
-        
-        for (let i = 0; i < userIndices.length; i++) {
-            const userIdx = userIndices[i];
-            const positiveItemIdx = itemIndices[i];
-            
-            // Get embeddings
-            const userEmb = this.userEmbeddings[userIdx];
-            const positiveEmb = this.itemEmbeddings[positiveItemIdx];
-            
-            // Calculate positive score
-            const positiveScore = this.dotProduct(userEmb, positiveEmb);
-            
-            // Sample negative item
-            let negativeItemIdx;
-            do {
-                negativeItemIdx = Math.floor(Math.random() * this.numItems);
-            } while (negativeItemIdx === positiveItemIdx);
-            
-            const negativeEmb = this.itemEmbeddings[negativeItemIdx];
-            const negativeScore = this.dotProduct(userEmb, negativeEmb);
-            
-            // BPR loss: -log(sigmoid(positiveScore - negativeScore))
-            const diff = positiveScore - negativeScore;
-            const sigmoid = 1 / (1 + Math.exp(-diff));
-            const loss = -Math.log(sigmoid + 1e-8);
-            
-            totalLoss += loss;
-            
-            // Calculate gradients
-            const gradFactor = (1 - sigmoid);
-            
-            // Update embeddings
-            for (let d = 0; d < this.embeddingDim; d++) {
-                // User gradient
-                this.userEmbeddings[userIdx][d] += this.learningRate * gradFactor * 
-                    (positiveEmb[d] - negativeEmb[d]);
-                
-                // Positive item gradient
-                this.itemEmbeddings[positiveItemIdx][d] += this.learningRate * gradFactor * userEmb[d];
-                
-                // Negative item gradient
-                this.itemEmbeddings[negativeItemIdx][d] -= this.learningRate * gradFactor * userEmb[d];
+            // Force garbage collection in browsers that support it
+            if (tf.memory().numTensors > 1000) {
+                console.log('Cleaning up memory:', tf.memory().numTensors, 'tensors');
+                tf.engine().startScope();
+                tf.engine().endScope();
             }
         }
         
-        return totalLoss / userIndices.length;
+        return lossHistory;
     }
 
-    dotProduct(a, b) {
-        let result = 0;
-        for (let i = 0; i < a.length; i++) {
-            result += a[i] * b[i];
-        }
-        return result;
-    }
-
-    getItemEmbeddings() {
-        return this.itemEmbeddings;
-    }
-
-    async getRecommendations(userIndex, allItemIndices, excludeIndices) {
-        const userEmb = this.userEmbeddings[userIndex];
-        const excludeSet = new Set(excludeIndices);
-        
-        // Calculate scores for all items
-        const scores = [];
-        for (const itemIdx of allItemIndices) {
-            if (!excludeSet.has(itemIdx)) {
-                const itemEmb = this.itemEmbeddings[itemIdx];
-                const score = this.dotProduct(userEmb, itemEmb);
-                scores.push({index: itemIdx, score: score});
-            }
-        }
-        
-        // Sort by score descending and return top 10
-        return scores.sort((a, b) => b.score - a.score)
-                    .slice(0, 10)
-                    .map(item => item.index);
-    }
-}
-
-class DeepLearningTwoTowerModel {
-    constructor(numUsers, numItems, embeddingDim, numGenres) {
-        this.numUsers = numUsers;
-        this.numItems = numItems;
-        this.embeddingDim = embeddingDim;
-        this.numGenres = numGenres;
-        
-        // User tower: user_id -> embedding
-        this.userEmbeddings = tf.variable(tf.randomNormal([numUsers, embeddingDim], 0, 0.05));
-        
-        // Item tower: item_id -> embedding + genre features -> MLP
-        this.itemEmbeddings = tf.variable(tf.randomNormal([numItems, embeddingDim], 0, 0.05));
-        
-        // MLP layers for item features
-        this.itemHiddenWeights = tf.variable(tf.randomNormal([embeddingDim + numGenres, embeddingDim * 2], 0, 0.05));
-        this.itemHiddenBias = tf.variable(tf.zeros([embeddingDim * 2]));
-        this.itemOutputWeights = tf.variable(tf.randomNormal([embeddingDim * 2, embeddingDim], 0, 0.05));
-        this.itemOutputBias = tf.variable(tf.zeros([embeddingDim]));
-        
-        this.optimizer = tf.train.adam(0.001);
-    }
-
-    async train(userIndices, itemIndices, itemGenreFeatures, progressCallback) {
-        const epochs = 50;
-        const batchSize = 512;
-        
-        // Convert genre features to tensor
-        this.itemGenreTensor = tf.tensor2d(itemGenreFeatures);
-        
-        for (let epoch = 0; epoch < epochs; epoch++) {
-            let totalLoss = 0;
-            let batchCount = 0;
-            
-            // Shuffle data
-            const shuffledIndices = this.shuffleArray([...userIndices.keys()]);
-            
-            for (let i = 0; i < shuffledIndices.length; i += batchSize) {
-                const batchIndices = shuffledIndices.slice(i, i + batchSize);
-                const batchUsers = batchIndices.map(idx => userIndices[idx]);
-                const batchItems = batchIndices.map(idx => itemIndices[idx]);
-                
-                const loss = await this.trainBatch(batchUsers, batchItems);
-                totalLoss += loss;
-                batchCount++;
-            }
-            
-            const avgLoss = totalLoss / batchCount;
-            if (progressCallback) {
-                progressCallback(avgLoss, epoch + 1);
-            }
-            
-            if (isNaN(avgLoss)) break;
-        }
-    }
-
-    async trainBatch(userIndices, itemIndices) {
+    async trainBatch(batch) {
         return tf.tidy(() => {
-            const users = tf.tensor1d(userIndices, 'int32');
-            const items = tf.tensor1d(itemIndices, 'int32');
+            const userIndices = batch.map(interaction => interaction.userIndex);
+            const itemIndices = batch.map(interaction => interaction.itemIndex);
             
-            const lossFunction = () => {
-                // Get user embeddings
-                const userEmb = this.userEmbeddings.gather(users);
-                
-                // Get item embeddings and process through MLP
-                const itemBaseEmb = this.itemEmbeddings.gather(items);
-                const itemGenreFeatures = this.itemGenreTensor.gather(items);
-                const itemCombined = tf.concat([itemBaseEmb, itemGenreFeatures], 1);
-                
-                // MLP with one hidden layer and ReLU activation
-                const hidden = tf.relu(tf.add(tf.matMul(itemCombined, this.itemHiddenWeights), this.itemHiddenBias));
-                const itemEmb = tf.add(tf.matMul(hidden, this.itemOutputWeights), this.itemOutputBias);
-                
-                // Normalize embeddings
-                const userEmbNorm = tf.div(userEmb, tf.norm(userEmb, 2, 1, true));
-                const itemEmbNorm = tf.div(itemEmb, tf.norm(itemEmb, 2, 1, true));
-                
-                // Calculate scores using dot product
-                const scores = tf.sum(tf.mul(userEmbNorm, itemEmbNorm), 1);
-                
-                // Sample negative items
-                const negativeItems = tf.randomUniform([userIndices.length], 0, this.numItems, 'int32');
-                const negativeBaseEmb = this.itemEmbeddings.gather(negativeItems);
-                const negativeGenreFeatures = this.itemGenreTensor.gather(negativeItems);
-                const negativeCombined = tf.concat([negativeBaseEmb, negativeGenreFeatures], 1);
-                
-                const negativeHidden = tf.relu(tf.add(tf.matMul(negativeCombined, this.itemHiddenWeights), this.itemHiddenBias));
-                const negativeEmb = tf.add(tf.matMul(negativeHidden, this.itemOutputWeights), this.itemOutputBias);
-                const negativeEmbNorm = tf.div(negativeEmb, tf.norm(negativeEmb, 2, 1, true));
-                
-                const negativeScores = tf.sum(tf.mul(userEmbNorm, negativeEmbNorm), 1);
-                
-                // BPR loss
-                const diff = tf.sub(scores, negativeScores);
-                const loss = tf.mean(tf.neg(tf.log(tf.sigmoid(diff))));
-                
-                return loss;
-            };
+            // Get genre features for items if using MLP
+            let genreFeatures = null;
+            if (this.config.useMLP) {
+                genreFeatures = batch.map(interaction => {
+                    // This would need access to items data - in practice you'd pass this in
+                    // For now, using random features as placeholder
+                    return new Array(19).fill(0).map(() => Math.random());
+                });
+            }
             
-            const loss = this.optimizer.minimize(lossFunction, true);
+            const userTensor = tf.tensor1d(userIndices, 'int32');
+            const itemTensor = tf.tensor1d(itemIndices, 'int32');
+            
+            const loss = this.optimizer.minimize(() => {
+                const userEmb = this.userForward(userTensor);
+                const itemEmb = this.itemForward(itemTensor, genreFeatures);
+                
+                return this.computeLoss(userEmb, itemEmb);
+            }, true);
+            
             return loss ? loss.dataSync()[0] : 0;
         });
     }
 
-    shuffleArray(array) {
-        for (let i = array.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [array[i], array[j]] = [array[j], array[i]];
-        }
-        return array;
-    }
-
-    getItemEmbeddings() {
+    async getUserEmbedding(userIndex) {
         return tf.tidy(() => {
-            // Get all item embeddings processed through MLP
-            const itemBaseEmb = this.itemEmbeddings;
-            const itemGenreFeatures = this.itemGenreTensor;
-            const itemCombined = tf.concat([itemBaseEmb, itemGenreFeatures], 1);
-            
-            const hidden = tf.relu(tf.add(tf.matMul(itemCombined, this.itemHiddenWeights), this.itemHiddenBias));
-            const itemEmb = tf.add(tf.matMul(hidden, this.itemOutputWeights), this.itemOutputBias);
-            
-            return itemEmb.arraySync();
+            const userTensor = tf.tensor1d([userIndex], 'int32');
+            return this.userForward(userTensor);
         });
     }
 
-    async getRecommendations(userIndex, allItemIndices, excludeIndices) {
+    async getItemEmbeddings(itemIndices) {
         return tf.tidy(() => {
-            const userEmb = this.userEmbeddings.gather([userIndex]);
-            const userEmbNorm = tf.div(userEmb, tf.norm(userEmb, 2, 1, true));
+            const itemTensor = tf.tensor1d(itemIndices, 'int32');
+            return this.itemForward(itemTensor);
+        });
+    }
+
+    async getRecommendations(userIndex, ratedItems, itemIndexMap, reverseItemIndex, items, topK = 10) {
+        return tf.tidy(async () => {
+            // Get user embedding
+            const userEmb = await this.getUserEmbedding(userIndex);
             
-            // Get all item embeddings
-            const items = tf.tensor1d(allItemIndices, 'int32');
-            const itemBaseEmb = this.itemEmbeddings.gather(items);
-            const itemGenreFeatures = this.itemGenreTensor.gather(items);
-            const itemCombined = tf.concat([itemBaseEmb, itemGenreFeatures], 1);
+            // Get all item embeddings (in batches for memory efficiency)
+            const allItemIndices = Array.from(itemIndexMap.values());
+            const batchSize = 512;
+            const allScores = [];
             
-            const hidden = tf.relu(tf.add(tf.matMul(itemCombined, this.itemHiddenWeights), this.itemHiddenBias));
-            const itemEmb = tf.add(tf.matMul(hidden, this.itemOutputWeights), this.itemOutputBias);
-            const itemEmbNorm = tf.div(itemEmb, tf.norm(itemEmb, 2, 1, true));
+            for (let i = 0; i < allItemIndices.length; i += batchSize) {
+                const batchIndices = allItemIndices.slice(i, i + batchSize);
+                const itemTensor = tf.tensor1d(batchIndices, 'int32');
+                const itemEmbs = await this.itemForward(itemTensor);
+                
+                // Compute scores for this batch
+                const userEmbsExpanded = userEmb.expandDims(1).tile([1, batchIndices.length, 1]);
+                const itemEmbsExpanded = itemEmbs.expandDims(0);
+                const batchScores = this.score(userEmbsExpanded, itemEmbsExpanded);
+                
+                const batchScoresArray = await batchScores.data();
+                allScores.push(...batchScoresArray);
+                
+                // Clean up
+                itemTensor.dispose();
+                itemEmbs.dispose();
+                userEmbsExpanded.dispose();
+                itemEmbsExpanded.dispose();
+                batchScores.dispose();
+            }
             
-            // Calculate scores
-            const scores = tf.matMul(userEmbNorm, itemEmbNorm.transpose());
+            userEmb.dispose();
             
-            // Apply mask for excluded items
-            const excludeSet = new Set(excludeIndices);
-            const mask = allItemIndices.map((idx, i) => excludeSet.has(idx) ? -Infinity : 0);
-            const maskTensor = tf.tensor1d(mask);
-            const maskedScores = tf.add(scores.flatten(), maskTensor);
+            // Combine scores with item information
+            const scoredItems = allItemIndices.map((itemIndex, idx) => ({
+                itemId: reverseItemIndex.get(itemIndex),
+                score: allScores[idx],
+                title: items.get(reverseItemIndex.get(itemIndex))?.title || 'Unknown'
+            }));
             
-           
+            // Filter out rated items and get top K
+            const unratedItems = scoredItems.filter(item => 
+                !ratedItems.has(item.itemId)
+            );
+            
+            return unratedItems
+                .sort((a, b) => b.score - a.score)
+                .slice(0, topK);
+        });
+    }
+
+    dispose() {
+        if (this.userEmbedding) this.userEmbedding.dispose();
+        if (this.itemEmbedding) this.itemEmbedding.dispose();
+        if (this.optimizer) this.optimizer.dispose();
+    }
+}
