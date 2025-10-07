@@ -1,4 +1,5 @@
 // Two-Tower Recommender Models for MovieLens 100K
+// Baseline (Matrix Factorization) and Deep (MLP) versions
 
 class TwoTowerBaseline {
     constructor(numUsers, numItems, embDim) {
@@ -6,7 +7,7 @@ class TwoTowerBaseline {
         this.numItems = numItems;
         this.embDim = embDim;
         
-        // Learnable embedding tables
+        // Learnable embedding tables (variables)
         this.userEmbedding = tf.variable(
             tf.randomNormal([numUsers, embDim], 0, 0.05), true, 'userEmbedding'
         );
@@ -26,7 +27,7 @@ class TwoTowerBaseline {
     }
 
     score(uEmb, iEmb) {
-        // Normalize embeddings and compute dot product
+        // Dot product along last dim with L2 normalization
         const u = tf.l2Normalize(uEmb, -1);
         const v = tf.l2Normalize(iEmb, -1);
         return tf.sum(u.mul(v), -1, true); // [B,1]
@@ -39,6 +40,10 @@ class TwoTowerBaseline {
             return this.score(uEmb, iEmb);
         });
     }
+
+    getTrainableVariables() {
+        return [this.userEmbedding, this.itemEmbedding];
+    }
 }
 
 class TwoTowerDeep {
@@ -48,7 +53,7 @@ class TwoTowerDeep {
         this.embDim = embDim;
         this.hiddenDim = hiddenDim;
         this.genreDim = genreDim;
-        
+
         // ID embeddings
         this.userIdEmbedding = tf.variable(
             tf.randomNormal([numUsers, embDim], 0, 0.05), true, 'userIdEmbedding'
@@ -57,12 +62,12 @@ class TwoTowerDeep {
             tf.randomNormal([numItems, embDim], 0, 0.05), true, 'itemIdEmbedding'
         );
 
-        // Project genres -> emb space
+        // Project genres -> emb space (learnable)
         this.genreW = tf.variable(
             tf.randomNormal([genreDim, embDim], 0, 0.05), true, 'genreW'
         );
 
-        // User tower MLP weights
+        // User tower MLP layers
         this.userW1 = tf.variable(
             tf.randomNormal([embDim, hiddenDim], 0, 0.05), true, 'userW1'
         );
@@ -72,10 +77,10 @@ class TwoTowerDeep {
         );
         this.userB2 = tf.variable(tf.zeros([embDim]), true, 'userB2');
 
-        // Item tower MLP weights
+        // Item tower MLP layers
         this.itemW1 = tf.variable(
             tf.randomNormal([embDim * 2, hiddenDim], 0, 0.05), true, 'itemW1'
-        );
+        ); // *2 because we concat idEmb + genreEmb
         this.itemB1 = tf.variable(tf.zeros([hiddenDim]), true, 'itemB1');
         this.itemW2 = tf.variable(
             tf.randomNormal([hiddenDim, embDim], 0, 0.05), true, 'itemW2'
@@ -84,6 +89,7 @@ class TwoTowerDeep {
     }
 
     userForward(userIdx) {
+        // [B,1] -> [B,emb]
         return tf.tidy(() => {
             const idEmb = tf.gather(this.userIdEmbedding, userIdx.squeeze([-1]));
             
@@ -96,12 +102,13 @@ class TwoTowerDeep {
     }
 
     itemForward(itemIdx, itemGenresOneHot) {
+        // [B,1], [B,G] -> [B,emb]
         return tf.tidy(() => {
             const idEmb = tf.gather(this.itemIdEmbedding, itemIdx.squeeze([-1]));
-            const genreEmb = itemGenresOneHot.matMul(this.genreW);
-            const combined = idEmb.concat(genreEmb, -1);
+            const genreEmb = itemGenresOneHot.matMul(this.genreW); // project one-hot genres
+            const combined = tf.concat([idEmb, genreEmb], -1); // [B, 2*embDim]
             
-            // MLP: (embDim*2) -> hiddenDim -> embDim
+            // MLP: 2*embDim -> hiddenDim -> embDim
             const h1 = tf.relu(combined.matMul(this.itemW1).add(this.itemB1));
             const out = h1.matMul(this.itemW2).add(this.itemB2);
             
@@ -110,74 +117,109 @@ class TwoTowerDeep {
     }
 
     score(uEmb, iEmb) {
+        // Dot product with L2 normalization
         const u = tf.l2Normalize(uEmb, -1);
         const v = tf.l2Normalize(iEmb, -1);
-        return tf.sum(u.mul(v), -1, true);
+        return tf.sum(u.mul(v), -1, true); // [B,1]
     }
 
-    predict(userIdx, itemIdx, itemGenresOneHot) {
+    predict(userIdx, itemIdx, itemGenres) {
         return tf.tidy(() => {
             const uEmb = this.userForward(userIdx);
-            const iEmb = this.itemForward(itemIdx, itemGenresOneHot);
+            const iEmb = this.itemForward(itemIdx, itemGenres);
             return this.score(uEmb, iEmb);
         });
+    }
+
+    getTrainableVariables() {
+        return [
+            this.userIdEmbedding, this.itemIdEmbedding, this.genreW,
+            this.userW1, this.userB1, this.userW2, this.userB2,
+            this.itemW1, this.itemB1, this.itemW2, this.itemB2
+        ];
     }
 }
 
 // Loss functions
-class LossFunctions {
-    static inBatchSoftmaxLoss(userEmbs, itemEmbs, temperature = 1.0) {
+class TwoTowerLoss {
+    static inBatchSoftmaxLoss(userEmbs, itemEmbs) {
         return tf.tidy(() => {
             // Normalize embeddings
-            const u = tf.l2Normalize(userEmbs, -1);
-            const v = tf.l2Normalize(itemEmbs, -1);
+            const u = tf.l2Normalize(userEmbs, -1); // [B, D]
+            const v = tf.l2Normalize(itemEmbs, -1); // [B, D]
             
-            // Compute similarity matrix: [B, B]
-            const logits = tf.matMul(u, v, false, true).div(tf.scalar(temperature));
+            // Compute logits: U @ V^T -> [B, B]
+            const logits = u.matMul(v.transpose());
             
-            // Labels are diagonal (each user matches with corresponding item)
+            // Labels: diagonal positions are positive (identity matrix)
             const batchSize = userEmbs.shape[0];
             const labels = tf.oneHot(tf.range(0, batchSize), batchSize);
             
             // Softmax cross entropy
-            const losses = tf.softmaxCrossEntropy(labels, logits);
-            return tf.mean(losses);
+            const loss = tf.losses.softmaxCrossEntropy(labels, logits);
+            return loss;
         });
     }
 
     static bprLoss(userEmbs, posItemEmbs, negItemEmbs) {
         return tf.tidy(() => {
+            // Normalize embeddings
             const u = tf.l2Normalize(userEmbs, -1);
             const pos = tf.l2Normalize(posItemEmbs, -1);
             const neg = tf.l2Normalize(negItemEmbs, -1);
             
-            const posScores = tf.sum(u.mul(pos), -1);
-            const negScores = tf.sum(u.mul(neg), -1);
+            // Compute scores
+            const posScores = tf.sum(u.mul(pos), -1); // [B]
+            const negScores = tf.sum(u.mul(neg), -1); // [B]
             
-            // BPR: -log σ(pos_score - neg_score)
+            // BPR loss: -log σ(pos_score - neg_score)
             const diff = posScores.sub(negScores);
-            const losses = tf.softplus(tf.neg(diff)); // -log(sigmoid(diff))
+            const loss = tf.mean(tf.neg(tf.logSigmoid(diff)));
             
-            return tf.mean(losses);
+            return loss;
         });
     }
 }
 
 // Training utilities
-class TrainingUtils {
-    static createOptimizer(learningRate) {
-        return tf.train.adam(learningRate);
+class TwoTowerTrainer {
+    constructor(model, optimizer, lossType = 'softmax') {
+        this.model = model;
+        this.optimizer = optimizer;
+        this.lossType = lossType;
     }
 
-    static sampleNegativeItems(positiveItems, numItems, numNegatives) {
-        const negatives = [];
-        for (let i = 0; i < numNegatives; i++) {
-            let neg;
-            do {
-                neg = Math.floor(Math.random() * numItems);
-            } while (positiveItems.has(neg));
-            negatives.push(neg);
-        }
-        return negatives;
+    async trainStep(userBatch, itemBatch, genresBatch = null) {
+        return tf.tidy(() => {
+            const lossFunction = () => {
+                if (this.lossType === 'softmax') {
+                    const userEmbs = this.model.userForward(userBatch);
+                    const itemEmbs = genresBatch ? 
+                        this.model.itemForward(itemBatch, genresBatch) : 
+                        this.model.itemForward(itemBatch);
+                    return TwoTowerLoss.inBatchSoftmaxLoss(userEmbs, itemEmbs);
+                } else { // BPR
+                    // For BPR, we need negative samples - use in-batch negatives
+                    const userEmbs = this.model.userForward(userBatch);
+                    const posItemEmbs = genresBatch ? 
+                        this.model.itemForward(itemBatch, genresBatch) : 
+                        this.model.itemForward(itemBatch);
+                    
+                    // Shuffle items for negatives
+                    const negIndices = tf.util.createShuffledIndices(itemBatch.shape[0]);
+                    const negItemBatch = tf.gather(itemBatch, negIndices);
+                    const negGenresBatch = genresBatch ? tf.gather(genresBatch, negIndices) : null;
+                    
+                    const negItemEmbs = negGenresBatch ? 
+                        this.model.itemForward(negItemBatch, negGenresBatch) : 
+                        this.model.itemForward(negItemBatch);
+                    
+                    return TwoTowerLoss.bprLoss(userEmbs, posItemEmbs, negItemEmbs);
+                }
+            };
+
+            const loss = this.optimizer.minimize(lossFunction, true, this.model.getTrainableVariables());
+            return loss ? loss.dataSync()[0] : 0;
+        });
     }
 }
